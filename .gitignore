@@ -1,0 +1,40 @@
+# Node.js
+node_modules/
+npm-debug.log*
+package-lock.json
+
+# Logs
+*.log
+error_log.txt
+imitator_log.txt
+
+# Recording files
+recording.jsonl
+recordings/
+*.jsonl
+
+# Analysis output files
+*_analysis.txt
+first_lines.txt
+sample_packet.json
+walking_packet.json
+
+# Bedrock Server (don't commit the entire server)
+bedrock-server-*/
+server/
+
+# Temporary files
+*.tmp
+
+# Archive folder
+archive/
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
