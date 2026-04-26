@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node --check *)",
+      "Bash(node tools/compare_packets.js *)",
+      "Bash(npm show *)"
+    ]
+  }
+}

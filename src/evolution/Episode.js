@@ -1,261 +1,239 @@
 /**
- * Episode - Run a single evaluation episode for a genome
- * 
- * Connects a bot to the server, uses genome parameters to control movement,
- * measures distance traveled, and returns fitness score.
- * 
- * @module src/evolution/Episode
+ * Episode - Single evaluation run for a genome
+ *
+ * Uses the same PhysicsEngine/InputGenerator as the walker bot so that
+ * evolved genomes generalise to real movement.
+ *
+ * Fitness is based exclusively on server-reported position (move_player /
+ * correct_player_move_prediction), NOT on local physics predictions.
  */
 
-const { createClient } = require('bedrock-protocol')
+const { createClient }  = require('bedrock-protocol')
+const { PhysicsEngine } = require('../movement/PhysicsEngine')
+const { InputGenerator, INPUT_BASE } = require('../movement/InputGenerator')
+const { cameraOrientation, distance2D } = require('../utils/helpers')
 
-// Base input value (from analysis)
-const INPUT_BASE = 281474976710656n
-const INPUT_UP = 1n << 10n           // Forward (W key)
-const INPUT_VERTICAL_COLLISION = 1n << 50n  // On ground
-const INPUT_WANT_UP = 1n << 16n      // Want up
+// Flags referenced by genome boolean genes
+const INPUT_UP                = 1n << 10n
+const INPUT_VERTICAL_COLLISION = 1n << 50n
+const INPUT_WANT_UP           = 1n << 16n
 
 class Episode {
     constructor(genome, config = {}) {
         this.genome = genome
         this.config = {
-            host: config.host || '127.0.0.1',
-            port: config.port || 19132,
-            duration: config.duration || 5000,  // Episode duration in ms
-            tickRate: config.tickRate || 50,    // ms per tick (20 ticks/s)
+            host:     config.host     || '127.0.0.1',
+            port:     config.port     || 19132,
+            duration: config.duration || 5000,
+            tickRate: config.tickRate || 50,
             username: config.username || `EvoBot_${Date.now() % 10000}`,
             ...config
         }
-        
-        this.client = null
+
+        this.client  = null
+        this.physics = new PhysicsEngine()
+        this.inputGen = new InputGenerator()
+
         this.state = {
-            position: { x: 0, y: 64, z: 0 },
-            serverPosition: { x: 0, y: 64, z: 0 },  // Position from server
-            spawnPosition: null,
-            yaw: 0,
-            pitch: 0,
-            serverTick: 0n,
-            isSpawned: false,
-            tickCount: 0
+            yaw:          0,
+            pitch:        0,
+            serverTick:   0n,
+            isSpawned:    false,
+            tickCount:    0,
+            spawnPosition:  null,
+            // Server-authoritative tracking
+            serverPos:    { x: 0, y: 64, z: 0 },
+            correctionCount: 0
         }
-        
+
+        this.serverMaxDistance = 0
         this.fitness = 0
-        this.maxDistance = 0
-        this.serverMaxDistance = 0  // Distance based on server position
     }
 
-    /**
-     * Run the episode and return fitness
-     * @returns {Promise<number>} - Fitness score (distance from spawn)
-     */
     async run() {
-        return new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => {
+        return new Promise((resolve) => {
+            const safetyTimeout = setTimeout(() => {
                 this._cleanup()
                 resolve(this.fitness)
-            }, this.config.duration + 5000) // Extra time for connection
-            
+            }, this.config.duration + 8000)
+
             try {
                 this._connect()
-                
+
                 this.client.on('spawn', () => {
                     this.state.isSpawned = true
-                    
-                    // Start movement loop
+                    this.state.yaw = this.genome.genes.preferredDirection || 0
+
                     const interval = setInterval(() => {
-                        if (!this.state.isSpawned) {
-                            clearInterval(interval)
-                            return
-                        }
+                        if (!this.state.isSpawned) { clearInterval(interval); return }
+                        if (!this.state.spawnPosition) return
                         this._tick()
                     }, this.config.tickRate)
-                    
-                    // Stop after duration
+
                     setTimeout(() => {
                         clearInterval(interval)
-                        clearTimeout(timeout)
+                        clearTimeout(safetyTimeout)
                         this._calculateFitness()
                         this._cleanup()
                         resolve(this.fitness)
                     }, this.config.duration)
                 })
-                
-                this.client.on('error', (err) => {
-                    clearTimeout(timeout)
+
+                this.client.on('error', () => {
+                    clearTimeout(safetyTimeout)
                     this._cleanup()
-                    resolve(0) // Return 0 fitness on error
+                    resolve(0)
                 })
-                
-            } catch (err) {
-                clearTimeout(timeout)
+
+            } catch {
+                clearTimeout(safetyTimeout)
                 this._cleanup()
                 resolve(0)
             }
         })
     }
 
-    /**
-     * Connect to server
-     * @private
-     */
     _connect() {
         this.client = createClient({
-            host: this.config.host,
-            port: this.config.port,
+            host:     this.config.host,
+            port:     this.config.port,
             username: this.config.username,
-            offline: true,
+            version:  '1.26.14',
+            offline:  true,
             skipPing: true
         })
-        
+
         this.client.on('start_game', (packet) => {
             if (packet.player_position) {
-                this.state.position = { ...packet.player_position }
-                this.state.serverPosition = { ...packet.player_position }
+                this.physics.setPosition(packet.player_position)
+                this.physics.setGroundY(packet.player_position.y)
                 this.state.spawnPosition = { ...packet.player_position }
-                this.state.yaw = this.genome.genes.preferredDirection || 0
+                this.state.serverPos     = { ...packet.player_position }
             }
             if (packet.current_tick) {
                 this.state.serverTick = BigInt(packet.current_tick)
             }
         })
-        
-        // Listen for server position updates
+
+        // move_player reflects the server's broadcast position (used by other clients to render the bot).
+        // Use it only to track fitness distance — never update local physics from it.
         this.client.on('move_player', (packet) => {
+            if (this.client.entityId && packet.runtime_id !== this.client.entityId) return
             if (packet.position) {
-                this.state.serverPosition = { ...packet.position }
-                this._updateServerMaxDistance()
+                this.state.serverPos = { ...packet.position }
+                this._trackServerDistance()
+            }
+        })
+
+        this.client.on('correct_player_move_prediction', (packet) => {
+            if (packet.position) {
+                this.state.serverPos = { ...packet.position }
+                this.physics.correctPosition(packet.position)
+                this._trackServerDistance()
+                this.state.correctionCount++
+            }
+            if (packet.tick != null) {
+                this.state.serverTick = BigInt(packet.tick)
             }
         })
     }
 
-    /**
-     * Execute one movement tick using genome parameters
-     * @private
-     */
     _tick() {
         const genes = this.genome.genes
         this.state.tickCount++
-        
-        // Build input_data based on genome flags
-        let inputData = INPUT_BASE
-        if (genes.useUpFlag) inputData |= INPUT_UP
-        if (genes.useVerticalCollision) inputData |= INPUT_VERTICAL_COLLISION
-        if (genes.useWantUp) inputData |= INPUT_WANT_UP
-        
-        // Calculate delta based on genome multipliers
-        const radYaw = (this.state.yaw * Math.PI) / 180
-        const deltaX = -Math.sin(radYaw) * genes.deltaMultiplierX
-        const deltaZ = Math.cos(radYaw) * genes.deltaMultiplierZ
-        const deltaY = genes.deltaY
-        
-        // Update position based on genome strategy
-        if (genes.updatePositionFromDelta) {
-            const lerp = genes.positionLerpFactor
-            this.state.position.x += deltaX * lerp
-            this.state.position.y += deltaY * lerp
-            this.state.position.z += deltaZ * lerp
-            
-            // Clamp Y to ground
-            if (this.state.position.y < 64) this.state.position.y = 64
+
+        // --- Determine movement intent from genome behavioural genes ---
+        const moving = Math.random() < genes.walkProbability
+        const sprinting = moving && Math.random() < genes.sprintProbability
+        const jumping   = moving && Math.random() < genes.jumpProbability &&
+                          this.state.tickCount % Math.max(1, genes.jumpInterval) === 0
+
+        // Direction changes
+        if (Math.random() < genes.directionChangeProbability) {
+            this.state.yaw += (Math.random() - 0.5) * 90
         }
-        
-        // Turn based on genome parameters
         if (this.state.tickCount % Math.max(1, Math.floor(genes.turnPeriod)) === 0) {
             this.state.yaw += genes.turnRate
         }
-        
-        // Build packet
-        const packet = {
-            pitch: this.state.pitch,
-            yaw: this.state.yaw,
-            position: { ...this.state.position },
-            move_vector: { x: 0, z: genes.moveVectorZ },
-            head_yaw: this.state.yaw,
-            input_data: inputData,
-            input_mode: 'mouse',
-            play_mode: 'screen',
+
+        const intent = {
+            forward:  moving,
+            backward: false,
+            left:     false,
+            right:    false,
+            jump:     jumping,
+            sneak:    false,
+            sprint:   sprinting
+        }
+
+        // --- Physics tick (corrected engine) ---
+        const delta = this.physics.tick(this.state.yaw, intent)
+        const physState = this.physics.getState()
+
+        // --- Input flags ---
+        this.inputGen.reset()
+        if (intent.forward)  this.inputGen.move('forward')
+        if (intent.sprint)   this.inputGen.sprint()
+        if (intent.jump)     this.inputGen.jump()
+        if (physState.hadVerticalCollision) this.inputGen.onGround()
+
+        // Override flags with genome boolean overrides (for evolution to discover)
+        let inputData = this.inputGen.build()
+        if (genes.useUpFlag && !intent.forward)         inputData |= INPUT_UP
+        if (!genes.useVerticalCollision)                inputData &= ~INPUT_VERTICAL_COLLISION
+        if (genes.useWantUp)                            inputData |= INPUT_WANT_UP
+
+        const camOri = cameraOrientation(this.state.yaw, this.state.pitch)
+
+        const pos = physState.position
+
+        this.client.queue('player_auth_input', {
+            pitch:             this.state.pitch,
+            yaw:               this.state.yaw,
+            position:          { x: pos.x, y: pos.y, z: pos.z },
+            move_vector:       { x: 0, z: intent.forward ? 1 : 0 },
+            head_yaw:          this.state.yaw,
+            input_data:        inputData,
+            input_mode:        'mouse',
+            play_mode:         'screen',
             interaction_model: 'touch',
             interact_rotation: { x: this.state.pitch, z: this.state.yaw },
-            tick: this.state.serverTick,
-            delta: { x: deltaX, y: deltaY, z: deltaZ },
+            tick:              this.state.serverTick,
+            delta,
             analogue_move_vector: { x: 0, z: 0 },
-            camera_orientation: { x: 0, y: 0, z: 0 },
-            raw_move_vector: { x: 0, z: genes.rawMoveVectorZ }
-        }
-        
-        this.client.queue('player_auth_input', packet)
-        
-        // Update tick counter
-        this.state.serverTick += BigInt(Math.max(1, genes.tickIncrement))
-        
-        // Track max distance for fitness
-        this._updateMaxDistance()
+            camera_orientation:   camOri,
+            raw_move_vector:   { x: 0, z: intent.forward ? 1 : 0 }
+        })
+
+        this.state.serverTick++
     }
 
-    /**
-     * Update maximum distance from spawn (client-side)
-     * @private
-     */
-    _updateMaxDistance() {
+    _trackServerDistance() {
         if (!this.state.spawnPosition) return
-        
-        const dx = this.state.position.x - this.state.spawnPosition.x
-        const dz = this.state.position.z - this.state.spawnPosition.z
-        const distance = Math.sqrt(dx * dx + dz * dz)
-        
-        if (distance > this.maxDistance) {
-            this.maxDistance = distance
-        }
+        const d = distance2D(
+            this.state.spawnPosition.x, this.state.spawnPosition.z,
+            this.state.serverPos.x,     this.state.serverPos.z
+        )
+        if (d > this.serverMaxDistance) this.serverMaxDistance = d
     }
 
-    /**
-     * Update maximum distance from spawn (server-side - REAL position)
-     * @private
-     */
-    _updateServerMaxDistance() {
-        if (!this.state.spawnPosition) return
-        
-        const dx = this.state.serverPosition.x - this.state.spawnPosition.x
-        const dz = this.state.serverPosition.z - this.state.spawnPosition.z
-        const distance = Math.sqrt(dx * dx + dz * dz)
-        
-        if (distance > this.serverMaxDistance) {
-            this.serverMaxDistance = distance
-        }
-    }
-
-    /**
-     * Calculate final fitness score
-     * @private
-     */
     _calculateFitness() {
-        // PRIMARY: Use SERVER position (real movement!)
+        // Primary metric: real distance confirmed by server
         this.fitness = this.serverMaxDistance
-        
-        // Bonus for consistent movement (not stuck at 0)
-        if (this.serverMaxDistance > 0.5) {
-            this.fitness += 1  // Small bonus for any movement
-        }
-        
-        // Bonus for larger distances
-        if (this.serverMaxDistance > 5) {
-            this.fitness += 5
-        }
-        if (this.serverMaxDistance > 10) {
-            this.fitness += 10
-        }
+
+        if (this.serverMaxDistance > 0.5)  this.fitness += 1
+        if (this.serverMaxDistance > 5)    this.fitness += 5
+        if (this.serverMaxDistance > 10)   this.fitness += 10
+
+        // Small penalty for excessive server corrections (desync indicates bad physics)
+        this.fitness -= this.state.correctionCount * 0.05
+        if (this.fitness < 0) this.fitness = 0
     }
 
-    /**
-     * Cleanup connection
-     * @private
-     */
     _cleanup() {
         this.state.isSpawned = false
         if (this.client) {
-            try {
-                this.client.close()
-            } catch (e) {}
+            try { this.client.close() } catch {}
             this.client = null
         }
     }

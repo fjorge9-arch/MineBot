@@ -4,17 +4,21 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node tools/gateway.js",
     "gateway": "node tools/gateway.js",
     "walker": "node bots/walker.js",
-    "replay": "node bots/replay.js"
+    "replay": "node bots/replay.js",
+    "evolve": "node bots/evolution.js",
+    "compare": "node tools/compare_packets.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "bedrock-protocol": "^3.53.0"
+    "bedrock-protocol": "^3.55.0"
+  },
+  "devDependencies": {
+    "minecraft-data": "^3.109.0"
   }
 }

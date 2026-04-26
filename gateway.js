@@ -20,7 +20,7 @@ console.log(`[Gateway] Recording packets to: ${RECORDING_FILE}`)
 let relay
 try {
     relay = new Relay({
-        version: '1.26.0', // Allow ANY client version to connect (fixes "Outdated Server" errors)
+        version: '1.26.14', // Allow ANY client version to connect (fixes "Outdated Server" errors)
         offline: true,
         host: '0.0.0.0', // Bind to all interfaces (IPv4)
         port: LISTEN_PORT,

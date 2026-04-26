@@ -1,219 +1,158 @@
 /**
  * MovementController - High-level movement API for bots
- * 
+ *
  * Combines PhysicsEngine and InputGenerator to produce valid
  * player_auth_input packets at the correct tick rate.
- * 
- * @module src/movement/MovementController
  */
 
 const { PhysicsEngine, PHYSICS } = require('./PhysicsEngine')
 const { InputGenerator, InputFlags, INPUT_BASE } = require('./InputGenerator')
+const { cameraOrientation } = require('../utils/helpers')
 
 class MovementController {
     constructor(bot) {
-        this.bot = bot
-        this.physics = new PhysicsEngine()
+        this.bot      = bot
+        this.physics  = new PhysicsEngine()
         this.inputGen = new InputGenerator()
-        
+
         this.tickInterval = null
-        this.isRunning = false
-        
+        this.isRunning    = false
+        this._tickCount   = 0
+
+        // Callback fired at the start of each physics tick (before intent is read).
+        // Use this to drive behaviour from the same loop as physics.
+        this.onTick = null
+
         // Current movement intent
         this.intent = {
-            forward: false,
+            forward:  false,
             backward: false,
-            left: false,
-            right: false,
-            jump: false,
-            sneak: false,
-            sprint: false
+            left:     false,
+            right:    false,
+            jump:     false,
+            sneak:    false,
+            sprint:   false
         }
 
-        // Bind server correction handler
         this._setupBotListeners()
     }
 
-    /**
-     * Setup listeners for server feedback
-     * @private
-     */
     _setupBotListeners() {
-        // Sync position from start_game
         this.bot.on('start_game', (packet) => {
             if (packet.player_position) {
                 this.physics.setPosition(packet.player_position)
+                // Ground level = spawn y
+                this.physics.setGroundY(packet.player_position.y)
             }
         })
 
-        // Handle server corrections - CRITICAL for preventing desync
+        // Server correction: realign physics position and tick counter
         this.bot.on('move_correction', (packet) => {
             if (packet.position) {
                 this.physics.correctPosition(packet.position)
             }
-        })
-
-        // Handle direct position updates
-        this.bot.on('move_player', (packet) => {
-            if (packet.position) {
-                this.physics.setPosition(packet.position)
+            if (packet.tick != null) {
+                const serverTick = BigInt(packet.tick)
+                if (serverTick !== this.bot.state.serverTick) {
+                    console.log(`[MovementController] Tick resync: ${this.bot.state.serverTick} → ${serverTick}`)
+                    this.bot.state.serverTick = serverTick
+                }
             }
         })
+
+        // move_player is informational (for other clients); physics is driven solely by
+        // start_game (initial position) and correct_player_move_prediction (server corrections).
     }
 
-    /**
-     * Start the movement loop (20 ticks/second)
-     */
     start() {
         if (this.isRunning) return
-        
         console.log('[MovementController] Starting movement loop')
-        this.isRunning = true
-        
-        this.tickInterval = setInterval(() => {
-            this._tick()
-        }, PHYSICS.TICK_DURATION)
+        this.isRunning    = true
+        this.tickInterval = setInterval(() => this._tick(), PHYSICS.TICK_DURATION)
     }
 
-    /**
-     * Stop the movement loop
-     */
     stop() {
         if (!this.isRunning) return
-        
         console.log('[MovementController] Stopping movement loop')
         this.isRunning = false
-        
         if (this.tickInterval) {
             clearInterval(this.tickInterval)
             this.tickInterval = null
         }
     }
 
-    /**
-     * Set movement direction
-     * @param {'forward'|'backward'|'left'|'right'|'none'} direction
-     */
     setDirection(direction) {
-        // Reset all directions
-        this.intent.forward = false
+        this.intent.forward  = false
         this.intent.backward = false
-        this.intent.left = false
-        this.intent.right = false
-
-        if (direction !== 'none') {
-            this.intent[direction] = true
-        }
+        this.intent.left     = false
+        this.intent.right    = false
+        if (direction !== 'none') this.intent[direction] = true
     }
 
-    /**
-     * Start moving forward
-     */
-    moveForward() {
-        this.intent.forward = true
-        this.intent.backward = false
-    }
+    moveForward()  { this.intent.forward = true;  this.intent.backward = false }
+    stopMoving()   { this.intent.forward = false; this.intent.backward = false; this.intent.left = false; this.intent.right = false }
+    setSprint(on)  { this.intent.sprint = on }
+    setSneak(on)   { this.intent.sneak  = on }
 
-    /**
-     * Stop all movement
-     */
-    stopMoving() {
-        this.intent.forward = false
-        this.intent.backward = false
-        this.intent.left = false
-        this.intent.right = false
-    }
-
-    /**
-     * Toggle sprint
-     * @param {boolean} enabled
-     */
-    setSprint(enabled) {
-        this.intent.sprint = enabled
-    }
-
-    /**
-     * Toggle sneak
-     * @param {boolean} enabled
-     */
-    setSneak(enabled) {
-        this.intent.sneak = enabled
-    }
-
-    /**
-     * Single jump
-     */
     jump() {
         this.intent.jump = true
-        // Auto-clear jump after one tick
-        setTimeout(() => {
-            this.intent.jump = false
-        }, PHYSICS.TICK_DURATION)
+        setTimeout(() => { this.intent.jump = false }, PHYSICS.TICK_DURATION)
     }
 
-    /**
-     * Execute one movement tick
-     * @private
-     */
     _tick() {
         if (!this.bot.state.isSpawned) return
 
         try {
-            // Calculate physics delta
-            const delta = this.physics.tick(this.bot.state.yaw, this.intent)
-            const state = this.physics.getState()
+            if (this.onTick) this.onTick(this._tickCount)
+            this._tickCount++
 
-            // Build input_data flags
+            const yaw      = this.bot.state.yaw
+            const pitch    = this.bot.state.pitch
+            const delta    = this.physics.tick(yaw, this.intent)
+            const state    = this.physics.getState()
+
+            // --- Build input_data flags ---
             this.inputGen.reset()
-            if (this.intent.forward) this.inputGen.move('forward')
+            if (this.intent.forward)  this.inputGen.move('forward')
             if (this.intent.backward) this.inputGen.move('backward')
-            if (this.intent.left) this.inputGen.move('left')
-            if (this.intent.right) this.inputGen.move('right')
-            if (this.intent.sprint) this.inputGen.sprint()
-            if (this.intent.sneak) this.inputGen.sneak()
-            if (this.intent.jump) this.inputGen.jump()
-            
-            // CRITICAL: Set vertical_collision when on ground!
-            if (state.isOnGround) this.inputGen.onGround()
+            if (this.intent.left)     this.inputGen.move('left')
+            if (this.intent.right)    this.inputGen.move('right')
+            if (this.intent.sprint)   this.inputGen.sprint()
+            if (this.intent.sneak)    this.inputGen.sneak()
+            if (this.intent.jump)     this.inputGen.jump()
+            // VERTICAL_COLLISION: only when gravity was active and ground stopped us
+            if (state.hadVerticalCollision) this.inputGen.onGround()
 
-            // Build packet
+            const camOrientation = cameraOrientation(yaw, pitch)
+
+            // --- Move vectors ---
+            const moveVecX = this.intent.left ? -1 : (this.intent.right   ? 1 : 0)
+            const moveVecZ = this.intent.forward ? 1 : (this.intent.backward ? -1 : 0)
+
             const packet = {
-                pitch: this.bot.state.pitch,
-                yaw: this.bot.state.yaw,
-                position: { 
-                    x: state.position.x, 
-                    y: state.position.y, 
-                    z: state.position.z 
-                },
-                move_vector: { 
-                    x: this.intent.left ? -1 : (this.intent.right ? 1 : 0), 
-                    z: this.intent.forward ? 1 : (this.intent.backward ? -1 : 0)
-                },
-                head_yaw: this.bot.state.yaw,
-                input_data: this.inputGen.build(),
-                input_mode: 'mouse',
-                play_mode: 'screen',
+                pitch,
+                yaw,
+                position:       { x: state.position.x, y: state.position.y, z: state.position.z },
+                move_vector:    { x: moveVecX, z: moveVecZ },
+                head_yaw:       yaw,
+                input_data:     this.inputGen.build(),
+                input_mode:     'mouse',
+                play_mode:      'screen',
                 interaction_model: 'touch',
-                interact_rotation: { x: this.bot.state.pitch, z: this.bot.state.yaw },
-                tick: this.bot.state.serverTick,
-                delta: delta,
+                interact_rotation: { x: pitch, z: yaw },
+                tick:           this.bot.state.serverTick,
+                delta,
                 analogue_move_vector: { x: 0, z: 0 },
-                camera_orientation: { x: 0, y: 0, z: 0 },
-                raw_move_vector: { 
-                    x: this.intent.left ? -1 : (this.intent.right ? 1 : 0), 
-                    z: this.intent.forward ? 1 : (this.intent.backward ? -1 : 0)
-                }
+                camera_orientation:   camOrientation,
+                raw_move_vector: { x: moveVecX, z: moveVecZ }
             }
 
-            // Send packet
             this.bot.send('player_auth_input', packet)
-
-            // Increment tick counter
             this.bot.state.serverTick++
 
-            // Debug logging (every 40 ticks = 2 seconds)
             if (this.bot.state.serverTick % 40n === 0n) {
-                console.log(`[Movement] Tick ${this.bot.state.serverTick} | Pos: ${state.position.x.toFixed(2)}, ${state.position.y.toFixed(2)}, ${state.position.z.toFixed(2)}`)
+                const p = state.position
+                console.log(`[Movement] Tick ${this.bot.state.serverTick} | Pos: ${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)} | Ground: ${state.isOnGround}`)
             }
 
         } catch (err) {
@@ -221,10 +160,6 @@ class MovementController {
         }
     }
 
-    /**
-     * Get current position
-     * @returns {object}
-     */
     getPosition() {
         return this.physics.getState().position
     }

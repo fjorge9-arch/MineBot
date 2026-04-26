@@ -47,7 +47,7 @@ const client = createClient({
     port: SERVER_PORT,
     offline: true,
     username: 'ImitatorBot',
-    version: '1.26.0',
+    version: '1.26.14',
     skipPing: true
 })
 

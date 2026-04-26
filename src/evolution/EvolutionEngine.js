@@ -198,10 +198,8 @@ class EvolutionEngine extends EventEmitter {
             // Crossover
             const child = parent1.crossover(parent2)
             
-            // Mutate
-            if (Math.random() < this.config.mutationRate) {
-                child.mutate()
-            }
+            // Always give each gene a chance to mutate at the configured rate
+            child.mutate(this.config.mutationRate)
             
             newPopulation.push(child)
         }

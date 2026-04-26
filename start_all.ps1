@@ -1,8 +1,8 @@
 Write-Host "Starting Minecraft Bedrock Server and Gateway..." -ForegroundColor Green
 
 # Start Bedrock Server in a new window
-$ServerPath = ".\bedrock-server-1.26.0.2\bedrock_server.exe"
-$ServerDir = ".\bedrock-server-1.26.0.2"
+$ServerPath = ".\bedrock-server-1.26.14.1\bedrock_server.exe"
+$ServerDir = ".\bedrock-server-1.26.14.1"
 
 if (Test-Path $ServerPath) {
     Write-Host "Launching Bedrock Server..."

@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node --check src/movement/PhysicsEngine.js)",
+      "Bash(node --check src/movement/MovementController.js)",
+      "Bash(node --check src/evolution/Episode.js)",
+      "Bash(node --check src/evolution/Genome.js)",
+      "Bash(node --check src/evolution/EvolutionEngine.js)",
+      "Bash(node tools/compare_packets.js recordings/session-2026-02-15T00-43-30-818Z.jsonl --ticks=30)",
+      "Bash(node tools/compare_packets.js recordings/session-2026-02-15T00-43-30-818Z.jsonl --ticks=40)",
+      "Bash(node tools/compare_packets.js recordings/session-2026-02-15T00-43-30-818Z.jsonl --skip=170 --ticks=30)"
+    ]
+  }
+}

@@ -20,6 +20,7 @@ class BaseBot extends EventEmitter {
             host: options.host || '127.0.0.1',
             port: options.port || 19132,
             username: options.username || 'MineBot',
+            version: options.version || '1.26.14',
             offline: true,
             skipPing: true
         }
@@ -162,14 +163,16 @@ class BaseBot extends EventEmitter {
      * @private
      */
     _handleMovePlayer(packet) {
-        // Server telling us where we are
+        // Only process packets for this bot — other entities also send move_player
+        if (this.client.entityId && packet.runtime_id !== this.client.entityId) return
+
         if (packet.position) {
             this.state.position = { ...packet.position }
         }
-        if (packet.yaw !== undefined) this.state.yaw = packet.yaw
-        if (packet.pitch !== undefined) this.state.pitch = packet.pitch
+        // Don't override yaw/pitch from move_player — the bot owns its own heading.
+        // Only start_game and explicit teleports should change direction.
         if (packet.on_ground !== undefined) this.state.isOnGround = packet.on_ground
-        
+
         this.emit('move_player', packet)
     }
 

@@ -20,7 +20,7 @@ const CONFIG = {
     serverHost: '127.0.0.1',
     serverPort: 19132,
     recordingsDir: path.join(__dirname, '..', 'recordings'),
-    version: '1.26.0'
+    version: '1.26.14'
 }
 
 // Create recordings directory if it doesn't exist

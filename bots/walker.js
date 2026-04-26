@@ -98,13 +98,23 @@ bot.on('move_correction', (packet) => {
     console.log('[WalkerBot] Server CORRECTION:', packet.position)
 })
 
-// Debug packet logging after connection - only log corrections, not move_player (too spammy)
+// Log server-confirmed bot position every 5s via move_player for our own entityId
 bot.on('join', () => {
+    let logCount = 0
     bot.client.on('packet', (packet) => {
         const name = packet.data?.name
-        // Only log position CORRECTIONS (not move_player which is for all entities)
-        if (['correct_player_move_prediction', 'set_actor_motion'].includes(name)) {
-            console.log(`[DEBUG] Server sent: ${name}`)
+        const p = packet.data?.params
+        if (name === 'correct_player_move_prediction') {
+            console.log(`[SERVER] Correction → pos: ${JSON.stringify(p?.position)}, tick: ${p?.tick}`)
+        }
+        if (name === 'move_player') {
+            const eid = bot.client.entityId
+            if (eid && p?.runtime_id === eid) {
+                logCount++
+                if (logCount % 20 === 1) { // every ~1s (20 ticks)
+                    console.log(`[SERVER] move_player (self) → pos: ${JSON.stringify(p?.position)}`)
+                }
+            }
         }
     })
 })
