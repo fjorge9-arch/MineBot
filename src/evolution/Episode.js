@@ -48,6 +48,7 @@ class Episode {
 
         this.serverMaxDistance = 0
         this.fitness = 0
+        this._positionPlaceholder = false
     }
 
     async run() {
@@ -63,6 +64,13 @@ class Episode {
                 this.client.on('spawn', () => {
                     this.state.isSpawned = true
                     this.state.yaw = this.genome.genes.preferredDirection || 0
+
+                    // Advance tick counter to match server's current tick
+                    if (this._startGameTime) {
+                        const elapsed = Date.now() - this._startGameTime
+                        const drift = BigInt(Math.round(elapsed / this.config.tickRate))
+                        this.state.serverTick += drift
+                    }
 
                     const interval = setInterval(() => {
                         if (!this.state.isSpawned) { clearInterval(interval); return }
@@ -107,21 +115,38 @@ class Episode {
             if (packet.player_position) {
                 this.physics.setPosition(packet.player_position)
                 this.physics.setGroundY(packet.player_position.y)
-                this.state.spawnPosition = { ...packet.player_position }
-                this.state.serverPos     = { ...packet.player_position }
+                this.state.serverPos = { ...packet.player_position }
+                if (packet.player_position.y > 1000) {
+                    // Placeholder Y — spawnPosition deferred until first plausible move_player
+                    this._positionPlaceholder = true
+                } else {
+                    this.state.spawnPosition = { ...packet.player_position }
+                }
             }
             if (packet.current_tick) {
                 this.state.serverTick = BigInt(packet.current_tick)
+                this._startGameTime = Date.now()
             }
         })
 
-        // move_player reflects the server's broadcast position (used by other clients to render the bot).
-        // Use it only to track fitness distance — never update local physics from it.
         this.client.on('move_player', (packet) => {
+            // Correct placeholder Y from start_game using first plausible position (any entity)
+            if (this._positionPlaceholder && packet.position && packet.position.y < 500) {
+                this._positionPlaceholder = false
+                this.physics.setPosition(packet.position)
+                this.physics.setGroundY(packet.position.y)
+                this.state.spawnPosition = { ...packet.position }
+                this.state.serverPos     = { ...packet.position }
+            }
+
             if (this.client.entityId && packet.runtime_id !== this.client.entityId) return
             if (packet.position) {
                 this.state.serverPos = { ...packet.position }
                 this._trackServerDistance()
+                if (packet.mode === 'reset' || packet.mode === 'teleport') {
+                    this.physics.setPosition(packet.position)
+                    this.physics.setGroundY(packet.position.y)
+                }
             }
         })
 
@@ -178,10 +203,10 @@ class Episode {
         if (physState.hadVerticalCollision) this.inputGen.onGround()
 
         // Override flags with genome boolean overrides (for evolution to discover)
-        let inputData = this.inputGen.build()
-        if (genes.useUpFlag && !intent.forward)         inputData |= INPUT_UP
-        if (!genes.useVerticalCollision)                inputData &= ~INPUT_VERTICAL_COLLISION
-        if (genes.useWantUp)                            inputData |= INPUT_WANT_UP
+        let inputRaw = this.inputGen.build()._value
+        if (genes.useUpFlag && !intent.forward)         inputRaw |= INPUT_UP
+        if (!genes.useVerticalCollision)                inputRaw &= ~INPUT_VERTICAL_COLLISION
+        if (genes.useWantUp)                            inputRaw |= INPUT_WANT_UP
 
         const camOri = cameraOrientation(this.state.yaw, this.state.pitch)
 
@@ -193,14 +218,14 @@ class Episode {
             position:          { x: pos.x, y: pos.y, z: pos.z },
             move_vector:       { x: 0, z: intent.forward ? 1 : 0 },
             head_yaw:          this.state.yaw,
-            input_data:        inputData,
+            input_data:        InputGenerator.toPacketFormat(inputRaw),
             input_mode:        'mouse',
             play_mode:         'screen',
             interaction_model: 'touch',
             interact_rotation: { x: this.state.pitch, z: this.state.yaw },
             tick:              this.state.serverTick,
             delta,
-            analogue_move_vector: { x: 0, z: 0 },
+            analogue_move_vector: { x: 0, z: intent.forward ? 1 : 0 },
             camera_orientation:   camOri,
             raw_move_vector:   { x: 0, z: intent.forward ? 1 : 0 }
         })

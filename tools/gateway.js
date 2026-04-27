@@ -129,9 +129,21 @@ relay.on('join', (player) => {
         }
     })
 
-    // Optional: Record critical server-to-client packets
+    // Log server→client movement broadcasts to confirm bot visibility
     player.on('clientbound', ({ name, params }) => {
-        // Could record spawn, teleport, etc. for replay sync
+        if (name === 'move_player') {
+            const isSelf = params.runtime_id === player.runtimeId
+            console.log(`[S→C] move_player rid=${params.runtime_id} self=${isSelf} mode=${params.mode} pos=${JSON.stringify(params.position)}`)
+        }
+        if (name === 'move_actor_absolute') {
+            console.log(`[S→C] move_actor_absolute rid=${params.runtime_id} pos=${JSON.stringify(params.position)}`)
+        }
+        if (name === 'move_actor_delta') {
+            console.log(`[S→C] move_actor_delta rid=${params.runtime_id} flags=${params.flags} dx=${params.x} dy=${params.y} dz=${params.z}`)
+        }
+        if (name === 'correct_player_move_prediction') {
+            console.log(`[S→C] correct_player_move_prediction pos=${JSON.stringify(params.position)} tick=${params.tick}`)
+        }
     })
 })
 

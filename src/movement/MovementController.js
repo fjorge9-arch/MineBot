@@ -60,12 +60,37 @@ class MovementController {
             }
         })
 
-        // move_player is informational (for other clients); physics is driven solely by
-        // start_game (initial position) and correct_player_move_prediction (server corrections).
+        // BaseBot emits 'position_corrected' when start_game gave a placeholder Y and
+        // the real world Y was determined from the first plausible move_player packet.
+        this.bot.on('position_corrected', (pos) => {
+            this.physics.setPosition(pos)
+            this.physics.setGroundY(pos.y)
+            console.log(`[MovementController] Physics Y corrected to ${pos.y.toFixed(2)}`)
+        })
+
+        // Authoritative teleports from the server also need to update physics.
+        this.bot.on('move_player', (packet) => {
+            if (packet.position && (packet.mode === 'reset' || packet.mode === 'teleport')) {
+                this.physics.setPosition(packet.position)
+                this.physics.setGroundY(packet.position.y)
+                console.log(`[MovementController] Position ${packet.mode} → y=${packet.position.y.toFixed(2)}`)
+            }
+        })
     }
 
     start() {
         if (this.isRunning) return
+
+        // Advance tick counter to match server's current tick.
+        // From start_game to here, the server has been ticking at 20Hz
+        // while we haven't sent any packets — correct for that drift.
+        if (this.bot._startGameTime) {
+            const elapsed = Date.now() - this.bot._startGameTime
+            const drift = BigInt(Math.round(elapsed / PHYSICS.TICK_DURATION))
+            this.bot.state.serverTick += drift
+            console.log(`[MovementController] Tick sync: +${drift} ticks (${elapsed}ms since start_game)`)
+        }
+
         console.log('[MovementController] Starting movement loop')
         this.isRunning    = true
         this.tickInterval = setInterval(() => this._tick(), PHYSICS.TICK_DURATION)

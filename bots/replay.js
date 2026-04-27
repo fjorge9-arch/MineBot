@@ -13,15 +13,23 @@ const fs = require('fs')
 const path = require('path')
 const BaseBot = require(path.join(__dirname, '..', 'src', 'client', 'BaseBot'))
 
+// Get recording file from args or use default
+const recordingFile = process.argv[2] || path.join(__dirname, '..', 'recording.jsonl')
+
+// Derive unique bot name from recording filename
+// e.g. session-2026-02-15T00-43-30-818Z.jsonl → Bot_0243
+function botNameFromFile(filePath) {
+    const base = path.basename(filePath, '.jsonl')
+    const m = base.match(/T(\d{2})-(\d{2})/)
+    return m ? `Bot_${m[1]}${m[2]}` : 'ReplayBot'
+}
+
 // Configuration
 const CONFIG = {
     host: '127.0.0.1',
-    port: 19134,              // Via gateway to see logs
-    username: 'ReplayBot'
+    port: 19132,
+    username: botNameFromFile(recordingFile)
 }
-
-// Get recording file from args or use default
-const recordingFile = process.argv[2] || path.join(__dirname, '..', 'recording.jsonl')
 
 if (!fs.existsSync(recordingFile)) {
     console.error(`Recording not found: ${recordingFile}`)
@@ -43,13 +51,9 @@ for (const line of lines) {
     if (!line.trim()) continue
     try {
         const pkt = JSON.parse(line, (key, value) => {
-            // Handle BigInt serialized as {_bigint: "..."} 
+            // Handle BigInt serialized as {_bigint: "..."}
             if (value && typeof value === 'object' && value._bigint) {
                 return BigInt(value._bigint)
-            }
-            // Handle older format {_value: "..."}
-            if (value && typeof value === 'object' && value._value) {
-                return BigInt(value._value)
             }
             return value
         })
@@ -82,9 +86,11 @@ let offset = { x: 0, y: 0, z: 0 }
 
 bot.on('start_game', (packet) => {
     serverStartTick = BigInt(packet.current_tick || 0)
-    const spawnPos = packet.player_position
+})
 
-    // Calculate offset from recording start
+bot.on('spawn', () => {
+    // Use corrected spawn position (BaseBot resolves placeholder Y before emitting 'spawn')
+    const spawnPos = bot.state.spawnPosition || bot.state.position
     const recStart = packets[0].params.position
     offset = {
         x: spawnPos.x - recStart.x,
@@ -94,11 +100,8 @@ bot.on('start_game', (packet) => {
 
     console.log(`[ReplayBot] Spawn: ${spawnPos.x.toFixed(2)}, ${spawnPos.y.toFixed(2)}, ${spawnPos.z.toFixed(2)}`)
     console.log(`[ReplayBot] Offset: ${offset.x.toFixed(2)}, ${offset.y.toFixed(2)}, ${offset.z.toFixed(2)}`)
-})
-
-bot.on('spawn', () => {
     console.log('[ReplayBot] Spawned, starting replay in 2 seconds...')
-    
+
     setTimeout(() => {
         startReplay()
     }, 2000)
@@ -106,7 +109,15 @@ bot.on('spawn', () => {
 
 function startReplay() {
     console.log('[ReplayBot] Starting replay...')
-    
+
+    // Account for time elapsed since start_game (join latency + 2s spawn delay)
+    if (bot._startGameTime) {
+        const elapsed = Date.now() - bot._startGameTime
+        const drift = BigInt(Math.round(elapsed / 50))
+        serverStartTick += drift
+        console.log(`[ReplayBot] Tick drift compensation: +${drift} (${elapsed}ms)`)
+    }
+
     const startTimestamp = packets[0].timestamp
     firstRecordedTick = BigInt(packets[0].params.tick || 0)
 

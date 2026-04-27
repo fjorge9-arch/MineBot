@@ -34,53 +34,50 @@ const movement = new MovementController(bot)
 
 // Wait for spawn, then start walking
 bot.on('spawn', () => {
-    console.log('[WalkerBot] Bot spawned, starting movement in 2 seconds...')
-    
+    console.log('[WalkerBot] Bot spawned, starting movement immediately')
+    console.log(`[WalkerBot] Server tick at spawn: ${bot.state.serverTick}`)
+
+    // Start immediately — any delay drifts the tick counter out of sync with the server
+    console.log('[WalkerBot] Starting forward movement!')
+
+    // Start the movement loop (20 ticks/second)
+    movement.start()
+
+    // Walk forward
+    movement.moveForward()
+
+    // Log status periodically
+    const statusInterval = setInterval(() => {
+        const pos = movement.getPosition()
+        const spawn = bot.state.spawnPosition
+        if (spawn) {
+            const distance = Math.sqrt(
+                Math.pow(pos.x - spawn.x, 2) +
+                Math.pow(pos.z - spawn.z, 2)
+            )
+            console.log(`[WalkerBot] Distance from spawn: ${distance.toFixed(2)} blocks`)
+        }
+    }, 5000)
+
+    // Stop after 30 seconds
     setTimeout(() => {
-        console.log('[WalkerBot] Starting forward movement!')
-        
-        // Start the movement loop (20 ticks/second)
-        movement.start()
-        
-        // Walk forward
-        movement.moveForward()
-        
-        // Log status periodically
-        const statusInterval = setInterval(() => {
-            const pos = movement.getPosition()
-            const spawn = bot.state.spawnPosition
-            
-            if (spawn) {
-                const distance = Math.sqrt(
-                    Math.pow(pos.x - spawn.x, 2) + 
-                    Math.pow(pos.z - spawn.z, 2)
-                )
-                console.log(`[WalkerBot] Distance from spawn: ${distance.toFixed(2)} blocks`)
-            }
-        }, 5000) // Every 5 seconds
+        console.log('[WalkerBot] Test complete, stopping...')
+        clearInterval(statusInterval)
+        movement.stop()
 
-        // Stop after 30 seconds (for testing)
-        setTimeout(() => {
-            console.log('[WalkerBot] Test complete, stopping...')
-            clearInterval(statusInterval)
-            movement.stop()
-            
-            const pos = movement.getPosition()
-            const spawn = bot.state.spawnPosition
-            
-            if (spawn) {
-                const distance = Math.sqrt(
-                    Math.pow(pos.x - spawn.x, 2) + 
-                    Math.pow(pos.z - spawn.z, 2)
-                )
-                console.log(`[WalkerBot] Final distance from spawn: ${distance.toFixed(2)} blocks`)
-            }
-            
-            bot.disconnect()
-            process.exit(0)
-        }, 30000)
+        const pos = movement.getPosition()
+        const spawn = bot.state.spawnPosition
+        if (spawn) {
+            const distance = Math.sqrt(
+                Math.pow(pos.x - spawn.x, 2) +
+                Math.pow(pos.z - spawn.z, 2)
+            )
+            console.log(`[WalkerBot] Final distance from spawn: ${distance.toFixed(2)} blocks`)
+        }
 
-    }, 2000)
+        bot.disconnect()
+        process.exit(0)
+    }, 30000)
 })
 
 // Handle errors gracefully
@@ -98,23 +95,40 @@ bot.on('move_correction', (packet) => {
     console.log('[WalkerBot] Server CORRECTION:', packet.position)
 })
 
-// Log server-confirmed bot position every 5s via move_player for our own entityId
+// Verbose server packet logging to diagnose movement acceptance
 bot.on('join', () => {
-    let logCount = 0
+    let moveCount = 0
     bot.client.on('packet', (packet) => {
         const name = packet.data?.name
         const p = packet.data?.params
+        if (name === 'start_game') {
+            console.log(`[SERVER] start_game player_position=${JSON.stringify(p?.player_position)} gamemode=${p?.player_gamemode}`)
+        }
         if (name === 'correct_player_move_prediction') {
-            console.log(`[SERVER] Correction → pos: ${JSON.stringify(p?.position)}, tick: ${p?.tick}`)
+            console.log(`[SERVER] CORRECTION → pos: ${JSON.stringify(p?.position)}, tick: ${p?.tick}`)
         }
         if (name === 'move_player') {
+            moveCount++
             const eid = bot.client.entityId
-            if (eid && p?.runtime_id === eid) {
-                logCount++
-                if (logCount % 20 === 1) { // every ~1s (20 ticks)
-                    console.log(`[SERVER] move_player (self) → pos: ${JSON.stringify(p?.position)}`)
-                }
+            const isSelf = eid && p?.runtime_id === eid
+            // Log every move_player in first 3s to see what's happening
+            if (moveCount <= 60 || isSelf) {
+                console.log(`[SERVER] move_player rid=${p?.runtime_id} self=${isSelf} mode=${p?.mode} pos=${JSON.stringify(p?.position)}`)
             }
+        }
+        if (name === 'set_actor_motion') {
+            console.log(`[SERVER] set_actor_motion vel=${JSON.stringify(p?.velocity)}`)
+        }
+        if (name === 'move_actor_absolute') {
+            console.log(`[SERVER] move_actor_absolute rid=${p?.runtime_id} pos=${JSON.stringify(p?.position)}`)
+        }
+        if (name === 'move_actor_delta') {
+            const eid = bot.client?.entityId
+            const isSelf = eid && p?.runtime_id === eid
+            console.log(`[SERVER] move_actor_delta rid=${p?.runtime_id} self=${isSelf} flags=${p?.flags}`)
+        }
+        if (name === 'network_chunk_publisher_update') {
+            console.log(`[SERVER] chunk_publisher pos=${JSON.stringify(p?.coordinates)} radius=${p?.radius}`)
         }
     })
 })

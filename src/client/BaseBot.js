@@ -11,6 +11,7 @@
 
 const { createClient } = require('bedrock-protocol')
 const EventEmitter = require('events')
+const JWT = require('jsonwebtoken')
 
 class BaseBot extends EventEmitter {
     constructor(options = {}) {
@@ -38,6 +39,12 @@ class BaseBot extends EventEmitter {
             spawnPosition: null
         }
 
+        // True when start_game gave a placeholder Y (>1000); cleared on first plausible move_player
+        this._positionPending = false
+
+        // Timestamp of start_game receipt — used to sync tick counter before first packet
+        this._startGameTime = null
+
         this.client = null
     }
 
@@ -48,9 +55,35 @@ class BaseBot extends EventEmitter {
         console.log(`[BaseBot] Connecting to ${this.config.host}:${this.config.port} as "${this.config.username}"`)
         
         this.client = createClient(this.config)
+        this._injectXuid()
         this._setupEventHandlers()
         
         return this
+    }
+
+    /**
+     * Override createClientChain to embed a non-zero XUID in the Certificate chain.
+     * BDS reads XUID from the old-format JWT (extraData.XUID), not the OIDC Token xid field.
+     * Without a non-zero XUID the server skips movement processing in strict auth mode.
+     * @private
+     */
+    _injectXuid() {
+        const fakeXuid = '253327400' + Date.now().toString().slice(-7)
+        const client = this.client
+
+        // createClientChain is defined synchronously by login.js during createClient.
+        // Override it before sendLogin fires (sendLogin is triggered by network_settings,
+        // which requires at least one async round-trip to the server).
+        const original = client.createClientChain.bind(client)
+        client.createClientChain = (mojangKey, offline) => {
+            if (!offline) { original(mojangKey, offline); return }
+
+            // Set xuid on profile before original runs so OIDC JWT embeds xid: fakeXuid.
+            // The original OIDC path reads client.profile.xuid for the xid field.
+            client.profile.xuid = fakeXuid
+            original(mojangKey, offline)
+            console.log(`[BaseBot] XUID injected: ${fakeXuid}`)
+        }
     }
 
     /**
@@ -66,6 +99,16 @@ class BaseBot extends EventEmitter {
 
         this.client.on('spawn', () => {
             console.log('[BaseBot] Spawned into world')
+            // If Y correction never arrived (no other players on server), fall back to
+            // Y=64 so the bot starts at a plausible height instead of Y=32769.
+            // The server will send correct_player_move_prediction if we're wrong.
+            if (this._positionPending) {
+                this._positionPending = false
+                this.state.position.y = 64
+                this.state.spawnPosition = { ...this.state.position }
+                console.log('[BaseBot] No Y correction received — falling back to Y=64')
+                this.emit('position_corrected', this.state.position)
+            }
             this.state.isSpawned = true
             this.emit('spawn')
         })
@@ -84,6 +127,10 @@ class BaseBot extends EventEmitter {
         // Game State Packets
         this.client.on('start_game', (packet) => {
             this._handleStartGame(packet)
+            // Required handshake: tell server how many chunks to load around the bot.
+            // Without this the server does not track the bot in the world and won't
+            // broadcast its movement to other clients.
+            this.client.queue('request_chunk_radius', { chunk_radius: 8, max_chunk_radius: 8 })
         })
 
         // Server Corrections - CRITICAL for movement sync
@@ -116,12 +163,20 @@ class BaseBot extends EventEmitter {
     _handleStartGame(packet) {
         if (packet.player_position) {
             this.state.position = { ...packet.player_position }
-            this.state.spawnPosition = { ...packet.player_position }
-            console.log(`[BaseBot] Spawn position: ${this._formatPos(this.state.position)}`)
+            if (packet.player_position.y > 1000) {
+                // BDS 1.26.14 sends placeholder Y=32769.62 before chunks load.
+                // spawnPosition stays null until corrected by first move_player.
+                this._positionPending = true
+                console.log(`[BaseBot] Placeholder spawn Y=${packet.player_position.y.toFixed(2)} — waiting for world Y`)
+            } else {
+                this.state.spawnPosition = { ...packet.player_position }
+                console.log(`[BaseBot] Spawn position: ${this._formatPos(this.state.position)}`)
+            }
         }
 
         if (packet.current_tick) {
             this.state.serverTick = BigInt(packet.current_tick)
+            this._startGameTime = Date.now()
             console.log(`[BaseBot] Server tick: ${this.state.serverTick}`)
         }
 
@@ -163,14 +218,22 @@ class BaseBot extends EventEmitter {
      * @private
      */
     _handleMovePlayer(packet) {
-        // Only process packets for this bot — other entities also send move_player
+        // If start_game gave a placeholder Y, use the first plausible position from
+        // any entity to establish the real world Y before we start sending packets.
+        if (this._positionPending && packet.position && packet.position.y < 500) {
+            this._positionPending = false
+            this.state.position.y = packet.position.y
+            this.state.spawnPosition = { ...this.state.position }
+            console.log(`[BaseBot] World Y corrected to ${packet.position.y.toFixed(2)} via move_player`)
+            this.emit('position_corrected', this.state.position)
+        }
+
+        // Only update state and emit for our own entity
         if (this.client.entityId && packet.runtime_id !== this.client.entityId) return
 
         if (packet.position) {
             this.state.position = { ...packet.position }
         }
-        // Don't override yaw/pitch from move_player — the bot owns its own heading.
-        // Only start_game and explicit teleports should change direction.
         if (packet.on_ground !== undefined) this.state.isOnGround = packet.on_ground
 
         this.emit('move_player', packet)

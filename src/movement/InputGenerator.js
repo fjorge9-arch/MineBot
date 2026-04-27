@@ -124,11 +124,77 @@ class InputGenerator {
     }
 
     /**
-     * Build the final input_data BigInt
-     * @returns {bigint}
+     * Build input_data as the object format expected by protodef's bitflags serializer.
+     * Sending a raw BigInt produces input_data=0 server-side because writeBitflags
+     * reads named boolean fields, not the BigInt itself.
+     * @returns {object}
      */
     build() {
-        return INPUT_BASE | this.currentFlags
+        const value = INPUT_BASE | this.currentFlags
+        return InputGenerator.toPacketFormat(value)
+    }
+
+    /**
+     * Convert a BigInt flag value to the object format required by bedrock-protocol.
+     * protodef's writeBitflags reads value._value (raw) + named booleans.
+     * @param {bigint} value
+     * @returns {object}
+     */
+    static toPacketFormat(value) {
+        return {
+            _value: value,
+            ascend:                     (value & (1n << 0n))  !== 0n,
+            descend:                    (value & (1n << 1n))  !== 0n,
+            north_jump:                 (value & (1n << 2n))  !== 0n,
+            jump_down:                  (value & (1n << 3n))  !== 0n,
+            sprint_down:                (value & (1n << 4n))  !== 0n,
+            change_height:              (value & (1n << 5n))  !== 0n,
+            jumping:                    (value & (1n << 6n))  !== 0n,
+            auto_jumping_in_water:      (value & (1n << 7n))  !== 0n,
+            sneaking:                   (value & (1n << 8n))  !== 0n,
+            sneak_down:                 (value & (1n << 9n))  !== 0n,
+            up:                         (value & (1n << 10n)) !== 0n,
+            down:                       (value & (1n << 11n)) !== 0n,
+            left:                       (value & (1n << 12n)) !== 0n,
+            right:                      (value & (1n << 13n)) !== 0n,
+            up_left:                    (value & (1n << 14n)) !== 0n,
+            up_right:                   (value & (1n << 15n)) !== 0n,
+            want_up:                    (value & (1n << 16n)) !== 0n,
+            want_down:                  (value & (1n << 17n)) !== 0n,
+            want_down_slow:             (value & (1n << 18n)) !== 0n,
+            want_up_slow:               (value & (1n << 19n)) !== 0n,
+            sprinting:                  (value & (1n << 20n)) !== 0n,
+            ascend_block:               (value & (1n << 21n)) !== 0n,
+            descend_block:              (value & (1n << 22n)) !== 0n,
+            sneak_toggle_down:          (value & (1n << 23n)) !== 0n,
+            persist_sneak:              (value & (1n << 24n)) !== 0n,
+            start_sprinting:            (value & (1n << 25n)) !== 0n,
+            stop_sprinting:             (value & (1n << 26n)) !== 0n,
+            start_sneaking:             (value & (1n << 27n)) !== 0n,
+            stop_sneaking:              (value & (1n << 28n)) !== 0n,
+            start_swimming:             (value & (1n << 29n)) !== 0n,
+            stop_swimming:              (value & (1n << 30n)) !== 0n,
+            start_jumping:              (value & (1n << 31n)) !== 0n,
+            start_gliding:              (value & (1n << 32n)) !== 0n,
+            stop_gliding:               (value & (1n << 33n)) !== 0n,
+            item_interact:              (value & (1n << 34n)) !== 0n,
+            block_action:               (value & (1n << 35n)) !== 0n,
+            item_stack_request:         (value & (1n << 36n)) !== 0n,
+            handled_teleport:           (value & (1n << 37n)) !== 0n,
+            emoting:                    (value & (1n << 38n)) !== 0n,
+            missed_swing:               (value & (1n << 39n)) !== 0n,
+            start_crawling:             (value & (1n << 40n)) !== 0n,
+            stop_crawling:              (value & (1n << 41n)) !== 0n,
+            start_flying:               (value & (1n << 42n)) !== 0n,
+            stop_flying:                (value & (1n << 43n)) !== 0n,
+            received_server_data:       (value & (1n << 44n)) !== 0n,
+            client_predicted_vehicle:   (value & (1n << 45n)) !== 0n,
+            paddling_left:              (value & (1n << 46n)) !== 0n,
+            paddling_right:             (value & (1n << 47n)) !== 0n,
+            block_breaking_delay_enabled: (value & (1n << 48n)) !== 0n,
+            horizontal_collision:       (value & (1n << 49n)) !== 0n,
+            vertical_collision:         (value & (1n << 50n)) !== 0n,
+        }
     }
 
     /**
